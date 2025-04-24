@@ -58,10 +58,28 @@ class Agent(BaseAgent):
 
         # learning info
         self.train_step = 0
-        initial_lr = Config.INIT_LEARNING_RATE_START
+        self.initial_lr = Config.INIT_LEARNING_RATE_START
+        self.current_lr = self.initial_lr
         parameters = self.model.parameters()
-        self.optimizer = torch.optim.Adam(params=parameters, lr=initial_lr, betas=(0.9, 0.999), eps=1e-8)
+        self.optimizer = torch.optim.Adam(params=parameters, lr=self.initial_lr, betas=(0.9, 0.999), eps=1e-8)
         self.parameters = [p for param_group in self.optimizer.param_groups for p in param_group["params"]]
+        
+        # 自适应KL散度惩罚系数
+        self.kl_coeff = Config.KL_COEFF if hasattr(Config, 'KL_COEFF') else 0.5
+        self.kl_target = Config.KL_TARGET if hasattr(Config, 'KL_TARGET') else 0.01
+        
+        # PPO多轮次学习参数
+        self.ppo_epoch = Config.PPO_EPOCH if hasattr(Config, 'PPO_EPOCH') else 4
+        self.batch_size = Config.BATCH_SIZE if hasattr(Config, 'BATCH_SIZE') else 1024
+        
+        # 动态学习率衰减
+        self.lr_decay = Config.LR_DECAY if hasattr(Config, 'LR_DECAY') else False
+        self.lr_decay_rate = Config.LR_DECAY_RATE if hasattr(Config, 'LR_DECAY_RATE') else 0.9995
+        self.min_lr = Config.MIN_LR if hasattr(Config, 'MIN_LR') else 0.00001
+        
+        # 用于离线训练的经验缓冲区
+        self.experience_buffer = []
+        self.buffer_size = 10000  # 最大经验缓冲区大小
 
         # tools
         self.reward_manager = None
@@ -179,63 +197,233 @@ class Agent(BaseAgent):
             feature=feature_vec, legal_action=legal_action, lstm_cell=self.lstm_cell, lstm_hidden=self.lstm_hidden
         )
 
+    # 将输入数据转换为批次以供训练
+    def _prepare_batches(self, input_datas, batch_size):
+        """
+        将输入数据划分为多个批次，用于mini-batch训练
+        """
+        indices = np.arange(input_datas.shape[0])
+        np.random.shuffle(indices)
+        
+        for start_idx in range(0, input_datas.shape[0], batch_size):
+            end_idx = min(start_idx + batch_size, input_datas.shape[0])
+            batch_indices = indices[start_idx:end_idx]
+            batch_input = input_datas[batch_indices]
+            yield batch_input
+    
+    # 计算新旧策略之间的KL散度
+    def _compute_kl_divergence(self, old_logits, new_logits, legal_action):
+        """
+        计算新旧策略之间的KL散度
+        """
+        old_probs_list = []
+        new_probs_list = []
+        
+        # 分割logits
+        label_split_size = [sum(self.label_size_list[: index + 1]) for index in range(len(self.label_size_list))]
+        old_logits_split = torch.split(old_logits, label_split_size[:-1], dim=1)
+        new_logits_split = torch.split(new_logits, label_split_size[:-1], dim=1)
+        legal_actions_split = torch.split(legal_action, label_split_size[:-1], dim=1)
+        
+        # 计算每个部分的KL散度
+        kl_div_sum = 0.0
+        for old_l, new_l, la in zip(old_logits_split, new_logits_split, legal_actions_split):
+            # 将logits转换为概率分布
+            old_policy = self._softmax_with_legal(old_l, la)
+            new_policy = self._softmax_with_legal(new_l, la)
+            
+            # 计算KL散度: sum(p_old * log(p_old / p_new))
+            # 添加一个小的常数防止数值不稳定
+            ratio = old_policy / (new_policy + 1e-8)
+            log_ratio = torch.log(ratio + 1e-8)
+            kl = old_policy * log_ratio
+            kl_div_sum += kl.sum(dim=1).mean()
+            
+        return kl_div_sum / len(old_logits_split)
+    
+    # 将logits和legal_action转换为合法的概率分布
+    def _softmax_with_legal(self, logits, legal_action):
+        """
+        根据legal_action对logits进行mask后计算softmax概率
+        """
+        # 应用legal_action mask
+        masked_logits = logits - 1e20 * (1.0 - legal_action)
+        # 计算softmax
+        max_logits = torch.max(masked_logits, dim=1, keepdim=True)[0]
+        exp_logits = torch.exp(masked_logits - max_logits) * legal_action
+        sum_exp_logits = torch.sum(exp_logits, dim=1, keepdim=True)
+        probs = exp_logits / (sum_exp_logits + 1e-10)
+        return probs
+        
+    # 动态调整学习率
+    def _adjust_learning_rate(self):
+        """
+        根据训练步数动态调整学习率
+        """
+        if self.lr_decay:
+            self.current_lr = max(self.min_lr, self.initial_lr * (self.lr_decay_rate ** self.train_step))
+            for param_group in self.optimizer.param_groups:
+                param_group['lr'] = self.current_lr
+                
+    # 自适应调整KL散度惩罚系数
+    def _adjust_kl_coeff(self, kl_div):
+        """
+        根据实际KL散度与目标KL散度的差异动态调整KL惩罚系数
+        """
+        if kl_div > self.kl_target * 2.0:
+            self.kl_coeff *= 1.5
+        elif kl_div < self.kl_target / 2.0:
+            self.kl_coeff *= 0.5
+        # 限制kl_coeff在合理范围内
+        self.kl_coeff = min(max(0.05, self.kl_coeff), 5.0)
+
     @learn_wrapper
     def learn(self, list_sample_data):
-        list_npdata = [sample_data.npdata for sample_data in list_sample_data]
+        # 将样本添加到经验缓冲区
+        if hasattr(Config, 'PPO_EPOCH') and Config.PPO_EPOCH > 1:
+            # 将新样本添加到缓冲区
+            for sample_data in list_sample_data:
+                self.experience_buffer.append(sample_data)
+            # 如果缓冲区超过大小限制，移除最旧的样本
+            if len(self.experience_buffer) > self.buffer_size:
+                excess = len(self.experience_buffer) - self.buffer_size
+                self.experience_buffer = self.experience_buffer[excess:]
+            
+            # 从经验缓冲区中随机采样进行训练
+            buffer_size = min(len(self.experience_buffer), self.batch_size * 4)
+            sample_indices = np.random.choice(len(self.experience_buffer), buffer_size, replace=False)
+            list_npdata = [self.experience_buffer[i].npdata for i in sample_indices]
+        else:
+            # 常规模式，直接使用传入的样本
+            list_npdata = [sample_data.npdata for sample_data in list_sample_data]
+            
         _input_datas = np.stack(list_npdata, axis=0)
         _input_datas = torch.from_numpy(_input_datas).to(self.device)
         results = {}
 
-        data_list = list(_input_datas.split(self.cut_points, dim=1))
-        for i, data in enumerate(data_list):
-            data = data.reshape(-1)
-            data_list[i] = data.float()
+        # 多轮次PPO训练
+        n_epochs = self.ppo_epoch if hasattr(Config, 'PPO_EPOCH') else 1
+        
+        # 动态调整学习率
+        self._adjust_learning_rate()
+        
+        # 存储累计损失
+        total_loss_sum = 0
+        value_loss_sum = 0
+        policy_loss_sum = 0
+        entropy_loss_sum = 0
+        kl_div_sum = 0
+        
+        # 如果启用KL惩罚，先获取当前策略下的logits
+        if hasattr(Config, 'USE_KL_PENALTY') and Config.USE_KL_PENALTY:
+            data_list = list(_input_datas.split(self.cut_points, dim=1))
+            for i, data in enumerate(data_list):
+                data = data.reshape(-1)
+                data_list[i] = data.float()
+                
+            seri_vec = data_list[0].reshape(-1, self.data_split_shape[0])
+            feature, legal_action = seri_vec.split(
+                [
+                    np.prod(self.seri_vec_split_shape[0]),
+                    np.prod(self.seri_vec_split_shape[1]),
+                ],
+                dim=1,
+            )
+            init_lstm_cell = data_list[-2]
+            init_lstm_hidden = data_list[-1]
 
-        seri_vec = data_list[0].reshape(-1, self.data_split_shape[0])
-        feature, legal_action = seri_vec.split(
-            [
-                np.prod(self.seri_vec_split_shape[0]),
-                np.prod(self.seri_vec_split_shape[1]),
-            ],
-            dim=1,
-        )
-        init_lstm_cell = data_list[-2]
-        init_lstm_hidden = data_list[-1]
+            feature_vec = feature.reshape(-1, self.seri_vec_split_shape[0][0])
+            lstm_hidden_state = init_lstm_hidden.reshape(-1, self.lstm_unit_size)
+            lstm_cell_state = init_lstm_cell.reshape(-1, self.lstm_unit_size)
 
-        feature_vec = feature.reshape(-1, self.seri_vec_split_shape[0][0])
-        lstm_hidden_state = init_lstm_hidden.reshape(-1, self.lstm_unit_size)
-        lstm_cell_state = init_lstm_cell.reshape(-1, self.lstm_unit_size)
+            format_inputs = [feature_vec, lstm_hidden_state, lstm_cell_state]
 
-        format_inputs = [feature_vec, lstm_hidden_state, lstm_cell_state]
+            self.model.set_eval_mode()
+            with torch.no_grad():
+                old_rst_list = self.model(format_inputs, inference=True)
+                old_logits = old_rst_list[0]  # 获取当前策略的logits
+        
+        # 多轮次训练
+        for epoch in range(n_epochs):
+            # 将数据分成多个批次进行训练
+            for batch_data in self._prepare_batches(_input_datas, self.batch_size):
+                data_list = list(batch_data.split(self.cut_points, dim=1))
+                for i, data in enumerate(data_list):
+                    data = data.reshape(-1)
+                    data_list[i] = data.float()
 
-        self.model.set_train_mode()
-        self.optimizer.zero_grad()
+                seri_vec = data_list[0].reshape(-1, self.data_split_shape[0])
+                feature, legal_action = seri_vec.split(
+                    [
+                        np.prod(self.seri_vec_split_shape[0]),
+                        np.prod(self.seri_vec_split_shape[1]),
+                    ],
+                    dim=1,
+                )
+                init_lstm_cell = data_list[-2]
+                init_lstm_hidden = data_list[-1]
 
-        rst_list = self.model(format_inputs)
-        total_loss, info_list = self.model.compute_loss(data_list, rst_list)
-        results["total_loss"] = total_loss.item()
+                feature_vec = feature.reshape(-1, self.seri_vec_split_shape[0][0])
+                lstm_hidden_state = init_lstm_hidden.reshape(-1, self.lstm_unit_size)
+                lstm_cell_state = init_lstm_cell.reshape(-1, self.lstm_unit_size)
 
-        total_loss.backward()
+                format_inputs = [feature_vec, lstm_hidden_state, lstm_cell_state]
 
-        # grad clip
-        if Config.USE_GRAD_CLIP:
-            torch.nn.utils.clip_grad_norm_(self.parameters, Config.GRAD_CLIP_RANGE)
+                self.model.set_train_mode()
+                self.optimizer.zero_grad()
 
-        self.optimizer.step()
+                rst_list = self.model(format_inputs)
+                
+                # 计算KL散度惩罚
+                kl_div = 0
+                kl_loss = 0
+                if hasattr(Config, 'USE_KL_PENALTY') and Config.USE_KL_PENALTY:
+                    new_logits = rst_list[0]
+                    kl_div = self._compute_kl_divergence(old_logits, new_logits, legal_action)
+                    kl_loss = self.kl_coeff * kl_div
+                    kl_div_sum += kl_div.item()
+                
+                total_loss, info_list = self.model.compute_loss(data_list, rst_list)
+                
+                # 如果启用KL惩罚，添加KL损失
+                if hasattr(Config, 'USE_KL_PENALTY') and Config.USE_KL_PENALTY:
+                    total_loss += kl_loss
+                
+                total_loss_sum += total_loss.item()
+                
+                # 收集各类损失
+                _, (value_loss, policy_loss, entropy_loss) = info_list
+                value_loss_sum += value_loss.item()
+                policy_loss_sum += policy_loss.item()
+                entropy_loss_sum += entropy_loss.item()
+
+                total_loss.backward()
+
+                # grad clip
+                if Config.USE_GRAD_CLIP:
+                    torch.nn.utils.clip_grad_norm_(self.parameters, Config.GRAD_CLIP_RANGE)
+
+                self.optimizer.step()
+            
+            # 每个epoch结束后更新KL惩罚系数
+            if hasattr(Config, 'USE_KL_PENALTY') and Config.USE_KL_PENALTY and epoch < n_epochs - 1:
+                self._adjust_kl_coeff(kl_div_sum / (epoch + 1))
+        
+        # 计算平均损失
+        avg_factor = max(1, n_epochs)
+        results["total_loss"] = total_loss_sum / avg_factor
+        
+        # 更新训练步数
         self.train_step += 1
-
-        _info_list = []
-        for info in info_list:
-            if isinstance(info, list):
-                _info = [i.item() for i in info]
-            else:
-                _info = info.item()
-            _info_list.append(_info)
+        
         if self.monitor:
-            _, (value_loss, policy_loss, entropy_loss) = _info_list
-            results["value_loss"] = round(value_loss, 2)
-            results["policy_loss"] = round(policy_loss, 2)
-            results["entropy_loss"] = round(entropy_loss, 2)
+            results["value_loss"] = round(value_loss_sum / avg_factor, 2)
+            results["policy_loss"] = round(policy_loss_sum / avg_factor, 2)
+            results["entropy_loss"] = round(entropy_loss_sum / avg_factor, 2)
+            if hasattr(Config, 'USE_KL_PENALTY') and Config.USE_KL_PENALTY:
+                results["kl_div"] = round(kl_div_sum / avg_factor, 4)
+                results["kl_coeff"] = round(self.kl_coeff, 4)
+            results["learning_rate"] = round(self.current_lr, 6)
             self.monitor.put_data({os.getpid(): results})
 
     @save_model_wrapper
@@ -356,5 +544,13 @@ class Agent(BaseAgent):
         # 根据概率采样，输入的probs应该是一维数组
         if use_max:
             return np.argmax(probs)
+
+        # 在随机采样时添加温度参数，控制探索
+        # 随着训练步数增加，降低温度参数，减少随机性
+        temperature = max(0.5, 1.0 - 0.0001 * self.train_step)  # 温度从1.0慢慢降到0.5
+        if temperature != 1.0:
+            # 应用温度缩放
+            probs = np.power(probs, 1.0 / temperature)
+            probs = probs / np.sum(probs)  # 重新归一化
 
         return np.argmax(np.random.multinomial(1, probs, size=1))

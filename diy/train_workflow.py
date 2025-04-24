@@ -10,6 +10,7 @@ Author: Tencent AI Arena Authors
 import os
 import time
 import random
+import numpy as np
 from ppo.feature.definition import (
     sample_process,
     build_frame,
@@ -18,7 +19,7 @@ from ppo.feature.definition import (
     NONE_ACTION,
 )
 from kaiwu_agent.utils.common_func import attached
-from ppo.config import GameConfig
+from ppo.config import GameConfig, Config
 from tools.model_pool_utils import get_valid_model_pool
 
 
@@ -28,15 +29,72 @@ def workflow(envs, agents, logger=None, monitor=None):
     # 智能体是否进行训练
     do_learns = [True, True]
     last_save_model_time = time.time()
+    
+    # 添加训练相关计数器和追踪变量
+    episode_count = 0
+    win_count = 0
+    train_win_rate = 0.0
+    eval_win_rate = 0.0
+    last_eval_time = time.time()
+    last_win_rate_update_time = time.time()
+    eval_results = []
+    
+    # 获取有效的模型池
+    model_pool = get_valid_model_pool(logger)
+    if not model_pool:
+        model_pool = []
+    
+    # 初始化模型选择概率，优先选择更强的模型作为对手
+    model_selection_probs = initialize_model_selection_probs(model_pool)
+    
+    # 用于自动保存不同阶段的模型
+    model_save_milestones = [100, 500, 1000, 2000, 5000]
 
     while True:
-        for g_data in run_episodes(envs, agents, logger, monitor):
+        for g_data in run_episodes(envs, agents, logger, monitor, model_selection_probs):
+            # 更新训练计数器和胜率
+            episode_result = g_data.get('episode_result', {})
+            if episode_result:
+                episode_count += 1
+                if episode_result.get('win', False):
+                    win_count += 1
+                
+                # 每100局更新一次胜率
+                if episode_count % 100 == 0:
+                    train_win_rate = win_count / 100
+                    win_count = 0
+                    logger.info(f"Episode {episode_count}, training win rate: {train_win_rate:.2f}")
+                    
+                    # 根据胜率动态调整模型选择概率
+                    if train_win_rate > 0.7:
+                        # 胜率过高，增加更强对手的选择概率
+                        update_model_selection_probs(model_selection_probs, stronger=True)
+                    elif train_win_rate < 0.3:
+                        # 胜率过低，增加更弱对手的选择概率
+                        update_model_selection_probs(model_selection_probs, stronger=False)
+                
+                # 如果是评估局，记录结果
+                if episode_result.get('is_eval', False):
+                    eval_results.append(episode_result.get('win', False))
+                    if len(eval_results) >= 20:
+                        eval_win_rate = sum(eval_results) / len(eval_results)
+                        logger.info(f"Evaluation win rate (last 20 games): {eval_win_rate:.2f}")
+                        eval_results = []
+                
+                # 保存训练里程碑模型
+                if episode_count in model_save_milestones:
+                    milestone_id = f"milestone_{episode_count}"
+                    agents[0].save_model(id=milestone_id)
+                    logger.info(f"Saved milestone model at episode {episode_count}")
+            
             for index, (d_learn, agent) in enumerate(zip(do_learns, agents)):
-                if d_learn and len(g_data[index]) > 0:
+                if d_learn and 'samples' in g_data and len(g_data['samples'][index]) > 0:
                     # The learner trains in a while true loop, here learn actually sends samples
                     # learner 采用 while true 训练，此处 learn 实际为发送样本
-                    agent.learn(g_data[index])
-            g_data.clear()
+                    agent.learn(g_data['samples'][index])
+            
+            if 'samples' in g_data:
+                g_data['samples'].clear()
 
             now = time.time()
             if now - last_save_model_time > GameConfig.MODEL_SAVE_INTERVAL:
@@ -44,7 +102,101 @@ def workflow(envs, agents, logger=None, monitor=None):
                 last_save_model_time = now
 
 
-def run_episodes(envs, agents, logger, monitor):
+# 初始化模型选择概率分布
+def initialize_model_selection_probs(model_pool):
+    probs = {
+        'selfplay': 0.6,    # 自我对弈概率
+        'common_ai': 0.1,   # 规则AI对弈概率
+        'models': {}        # 各历史模型的选择概率
+    }
+    
+    # 如果模型池非空，分配剩余概率给历史模型
+    if model_pool:
+        remaining_prob = 0.3
+        model_count = len(model_pool)
+        
+        # 较新的模型获得更高的概率（假设模型ID越大越新）
+        sorted_models = sorted([int(m) for m in model_pool])
+        for i, model_id in enumerate(sorted_models):
+            # 使用递增权重，越新的模型权重越高
+            weight = (i + 1) / sum(range(1, model_count + 1))
+            probs['models'][str(model_id)] = remaining_prob * weight
+    
+    return probs
+
+# 动态更新模型选择概率
+def update_model_selection_probs(probs, stronger=True):
+    if stronger:
+        # 增加更强对手的概率
+        probs['selfplay'] = max(0.4, probs['selfplay'] - 0.05)
+        probs['common_ai'] = max(0.05, probs['common_ai'] - 0.05)
+        
+        # 增加较新模型的概率
+        if probs['models']:
+            model_ids = sorted([int(m) for m in probs['models'].keys()])
+            newest_models = [str(m) for m in model_ids[-2:] if m in model_ids]  # 最新的两个模型
+            
+            for model_id in newest_models:
+                probs['models'][model_id] = min(0.3, probs['models'][model_id] + 0.05)
+    else:
+        # 增加更弱对手的概率
+        probs['selfplay'] = min(0.8, probs['selfplay'] + 0.05)
+        probs['common_ai'] = min(0.2, probs['common_ai'] + 0.05)
+        
+        # 减少较新模型的概率
+        if probs['models']:
+            model_ids = sorted([int(m) for m in probs['models'].keys()])
+            newest_models = [str(m) for m in model_ids[-2:] if m in model_ids]
+            
+            for model_id in newest_models:
+                probs['models'][model_id] = max(0.05, probs['models'][model_id] - 0.03)
+    
+    # 确保所有概率总和为1
+    model_prob_sum = sum(probs['models'].values()) if probs['models'] else 0
+    total = probs['selfplay'] + probs['common_ai'] + model_prob_sum
+    
+    # 归一化
+    if total != 1.0:
+        factor = 1.0 / total
+        probs['selfplay'] *= factor
+        probs['common_ai'] *= factor
+        for model_id in probs['models']:
+            probs['models'][model_id] *= factor
+    
+    return probs
+
+# 根据概率分布选择对手类型
+def select_opponent_type(probs):
+    r = random.random()
+    cumulative_prob = 0
+    
+    # 检查是否选择自我对弈
+    cumulative_prob += probs['selfplay']
+    if r < cumulative_prob:
+        return "selfplay"
+    
+    # 检查是否选择规则AI
+    cumulative_prob += probs['common_ai']
+    if r < cumulative_prob:
+        return "common_ai"
+    
+    # 否则选择历史模型
+    if probs['models']:
+        model_probs = list(probs['models'].items())
+        model_ids = [m[0] for m in model_probs]
+        model_weights = [m[1] for m in model_probs]
+        
+        # 归一化模型权重
+        weight_sum = sum(model_weights)
+        norm_weights = [w / weight_sum for w in model_weights]
+        
+        return np.random.choice(model_ids, p=norm_weights)
+    
+    # 默认返回自我对弈
+    return "selfplay"
+
+
+def run_episodes(envs, agents, logger, monitor, model_selection_probs=None):
     # hok1v1 environment
     # hok1v1环境
     env = envs[0]
@@ -66,6 +218,16 @@ def run_episodes(envs, agents, logger, monitor):
     # Make eval matches as evenly distributed as possible
     # 引入随机因子，让eval对局尽可能平均分布
     random_eval_start = random.randint(0, GameConfig.EVAL_FREQ)
+    
+    # 对手模型选择策略
+    if model_selection_probs is None:
+        model_selection_probs = {
+            'selfplay': 0.7,
+            'common_ai': 0.2,
+            'models': {
+                # 如果没有历史模型，则此部分为空
+            }
+        }
 
     # Single environment process (30 frame/s)
     # 单局流程 (30 frame/s)
@@ -76,15 +238,19 @@ def run_episodes(envs, agents, logger, monitor):
         # Set the id of the agent to be trained. id=0 means the blue side, id=1 means the red side.
         # 设置要训练的智能体的id，id=0表示蓝方，id=1表示红方，每一局都切换一次阵营。默认对手智能体是selfplay即自己
         train_agent_id = 1 - train_agent_id
+        
+        # 默认对手智能体是selfplay
         opponent_agent = "selfplay"
 
         # Evaluate at a certain frequency during training to reflect the improvement of the agent during training
         # 智能体支持边训练边评估，训练中按一定的频率进行评估，反映智能体在训练中的水平
         is_eval = (episode_cnt + random_eval_start) % GameConfig.EVAL_FREQ == 0
         if is_eval:
-            # The model used by the opponent: "common_ai" - rule-based agent, model_id - opponent model ID, see kaiwu.json for details
-            # 设置评估时的对手智能体类型，默认采用了common_ai，可选择: "common_ai" - 基于规则的智能体, model_id - 对手模型的ID, 模型ID内容可在kaiwu.json里查看和设置
+            # 评估模式，使用固定的对手
             opponent_agent = "common_ai"
+        else:
+            # 训练模式，根据概率选择对手
+            opponent_agent = select_opponent_type(model_selection_probs)
 
         # Generate a new set of agent configurations
         # 生成一组新的智能体配置
@@ -176,6 +342,10 @@ def run_episodes(envs, agents, logger, monitor):
         # Reset environment frame collector
         # 重置环境帧收集器
         frame_collector.reset(num_agents=agent_num)
+        
+        # 记录对局开始时间以及是否胜利
+        game_start_time = time.time()
+        is_win = False
 
         while True:
             # Initialize the default actions. If the agent does not make a decision, env.step uses the default action.
@@ -193,7 +363,7 @@ def run_episodes(envs, agents, logger, monitor):
 
                     # Only when do_predict=True and is_eval=False, the agent's environment data is saved.
                     # 仅do_predict=True且is_eval=False时，智能体的对局数据保存。即评估对局数据不训练，不是最新模型产生的数据不训练
-                    if not is_eval:
+                    if not is_eval and index == train_agent_id:
                         frame = build_frame(agent, state_dicts[index])
                         frame_collector.save_frame(frame, agent_id=index)
 
@@ -227,17 +397,34 @@ def run_episodes(envs, agents, logger, monitor):
                         total_reward_dicts[i][key] = value
 
             step += 1
+            
+            # 检查是否胜利（实时更新胜负状态）
+            if train_agent_id < len(state_dicts) and "termination_info" in state_dicts[train_agent_id]:
+                term_info = state_dicts[train_agent_id]["termination_info"]
+                if term_info.get("win", False):
+                    is_win = True
 
             # Normal end or timeout exit
             # 正常结束或超时退出
             if terminated or truncated:
+                # 计算对局时长
+                game_duration = time.time() - game_start_time
+                
                 logger.info(
-                    f"episode_{episode_cnt} terminated in fno_{frame_no}, truncated:{truncated}, eval:{is_eval}, total_reward_dicts:{total_reward_dicts}"
+                    f"episode_{episode_cnt} terminated in fno_{frame_no}, time:{game_duration:.1f}s, truncated:{truncated}, eval:{is_eval}, total_reward_dicts:{total_reward_dicts}"
                 )
+                # 记录更详细的胜负信息
+                if train_agent_id < len(state_dicts) and "termination_info" in state_dicts[train_agent_id]:
+                    term_info = state_dicts[train_agent_id]["termination_info"]
+                    is_win = term_info.get("win", False)
+                    logger.info(
+                        f"Episode {episode_cnt} result: {'WIN' if is_win else 'LOSE'}, opponent: {opponent_agent}"
+                    )
+                
                 # Reward for saving the last state of the environment
                 # 保存环境最后状态的reward
                 for index, (d_predict, agent) in enumerate(zip(do_predicts, agents)):
-                    if d_predict and not is_eval:
+                    if d_predict and not is_eval and index == train_agent_id:
                         frame_collector.save_last_frame(
                             agent_id=index,
                             reward=state_dicts[index]["reward"]["reward_sum"],
@@ -246,6 +433,8 @@ def run_episodes(envs, agents, logger, monitor):
                 monitor_data = {
                     "reward": round(total_reward_dicts[train_agent_id]["reward_sum"], 2),
                     "diy_1": round(total_reward_dicts[train_agent_id]["forward"], 2),
+                    "game_duration": round(game_duration, 2),
+                    "win": 1 if is_win else 0,
                 }
 
                 if monitor and is_eval:
@@ -255,5 +444,25 @@ def run_episodes(envs, agents, logger, monitor):
                 # 进行样本处理，准备训练
                 if len(frame_collector) > 0 and not is_eval:
                     list_agents_samples = sample_process(frame_collector)
-                    yield list_agents_samples
+                    
+                    # 返回样本和对局结果
+                    yield {
+                        'samples': list_agents_samples,
+                        'episode_result': {
+                            'win': is_win,
+                            'duration': game_duration,
+                            'is_eval': is_eval,
+                            'opponent': opponent_agent
+                        }
+                    }
+                else:
+                    # 返回仅包含对局结果的字典
+                    yield {
+                        'episode_result': {
+                            'win': is_win, 
+                            'duration': game_duration,
+                            'is_eval': is_eval,
+                            'opponent': opponent_agent
+                        }
+                    }
                 break
