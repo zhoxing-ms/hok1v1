@@ -20,6 +20,7 @@ class RewardStruct:
         self.weight = m_weight
         self.min_value = -1
         self.is_first_arrive_center = True
+        self.skill_usage_count = 0
 
 
 # Used to initialize various reward information
@@ -170,6 +171,10 @@ class GameRewardManager:
             # 前进
             elif reward_name == "forward":
                 reward_struct.cur_frame_value = self.calculate_forward(main_hero, main_tower, enemy_tower)
+            # Skill usage
+            # 技能使用
+            elif reward_name == "skill_usage":
+                reward_struct.cur_frame_value = self.calculate_skill_usage(main_hero, frame_data)
 
     # Calculate the total amount of experience gained using agent level and current experience value
     # 用智能体等级和当前经验值，计算获得经验值的总量
@@ -195,6 +200,18 @@ class GameRewardManager:
         if main_hero["actor_state"]["hp"] / main_hero["actor_state"]["max_hp"] > 0.99 and dist_hero2emy > dist_main2emy:
             forward_value = (dist_main2emy - dist_hero2emy) / dist_main2emy
         return forward_value
+
+    # Calculate skill usage reward based on skill cast count
+    # 根据技能施放次数计算技能使用奖励
+    def calculate_skill_usage(self, main_hero, frame_data):
+        skill_usage = 0
+        frame_action = frame_data.get("frame_action", {})
+        if "skill_action" in frame_action:
+            skill_actions = frame_action["skill_action"]
+            for action in skill_actions:
+                if action["caster"]["runtime_id"] == main_hero["actor_state"]["runtime_id"]:
+                    skill_usage += 1
+        return skill_usage * 0.1  # 0.1 reward per skill cast
 
     # Calculate the reward item information for both sides using frame data
     # 用帧数据来计算两边的奖励子项信息

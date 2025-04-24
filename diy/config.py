@@ -37,10 +37,11 @@ class GameConfig:
         "money": 0.006,
         "exp": 0.006,
         "ep_rate": 0.75,
-        "death": -1.0,
-        "kill": -0.6,
+        "death": -2.0,
+        "kill": 1.0,
         "last_hit": 0.5,
-        "forward": 0.01,
+        "forward": 0.1,
+        "skill_usage": 0.3,
     }
     # Time decay factor, used in reward_manager
     # 时间衰减因子，在reward_manager中使用
