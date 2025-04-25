@@ -32,14 +32,16 @@ class GameConfig:
     # Set the weight of each reward item and use it in reward_manager
     # 设置各个回报项的权重，在reward_manager中使用
     REWARD_WEIGHT_DICT = {
-        "hp_point": 0.0,
-        "tower_hp_point": 0.0,
-        "money": 0.0,
-        "exp": 0.0,
-        "ep_rate": 0.0,
-        "death": 0.0,
-        "kill": 0.0,
-        "last_hit": 0.0,
+        "hp_point": 2.0,
+        "tower_hp_point": 5.0,
+        "money": 0.006,
+        "exp": 0.006,
+        "ep_rate": 0.75,
+        "death": -2.0,
+        "kill": 1.0,
+        "last_hit": 0.5,
+        "forward": 0.1,
+        "skill_usage": 0.3,
     }
     # Time decay factor, used in reward_manager
     # 时间衰减因子，在reward_manager中使用
@@ -153,8 +155,8 @@ class Config:
     LEGAL_ACTION_SIZE_LIST = LABEL_SIZE_LIST.copy()
     LEGAL_ACTION_SIZE_LIST[-1] = LEGAL_ACTION_SIZE_LIST[-1] * LEGAL_ACTION_SIZE_LIST[0]
 
-    GAMMA = 0.9
-    LAMDA = 0.9
+    GAMMA = 0.995
+    LAMDA = 0.95
 
     USE_GRAD_CLIP = True
     GRAD_CLIP_RANGE = 0.5
