@@ -245,14 +245,7 @@ class GameRewardManager:
                 if main_hero_max_ep == 0 or main_hero_hp <= 0:
                     reward_struct.cur_frame_value = 0
                 else:
-                    # 增加对法力值使用的奖励
-                    prev_ep_rate = reward_struct.cur_frame_value
-                    current_ep_rate = main_hero_ep / float(main_hero_max_ep)
-                    # 如果法力值降低，说明使用了技能，给予额外奖励
-                    if prev_ep_rate > 0 and current_ep_rate < prev_ep_rate:
-                        reward_struct.cur_frame_value = current_ep_rate + 0.1  # 使用技能的额外奖励
-                    else:
-                        reward_struct.cur_frame_value = current_ep_rate
+                    reward_struct.cur_frame_value = main_hero_ep / float(main_hero_max_ep)
             # Kills
             # 击杀
             elif reward_name == "kill":
@@ -390,7 +383,7 @@ class GameRewardManager:
                     # 更改EP计算逻辑，鼓励技能使用
                     ep_change = reward_struct.cur_frame_value - reward_struct.last_frame_value
                     if ep_change < 0:  # EP减少，表示使用了技能
-                        reward_struct.value = abs(ep_change) * 0.5  # 使用技能获得正向奖励
+                        reward_struct.value = abs(ep_change)  # 使用技能获得正向奖励
                     else:
                         reward_struct.value = 0  # EP增加或不变，不给奖励
                 else:

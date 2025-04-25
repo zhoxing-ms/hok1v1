@@ -32,13 +32,13 @@ class GameConfig:
     # Set the weight of each reward item and use it in reward_manager
     # 设置各个回报项的权重，在reward_manager中使用
     REWARD_WEIGHT_DICT = {
-        "hp_point": 2.0,        # 保持不变，生命值对智能体生存重要
-        "tower_hp_point": 5.0,  # 保持不变，更加强调防御塔血量重要性
+        "hp_point": 3.0,        # 保持不变，生命值对智能体生存重要
+        "tower_hp_point": 6.0,  # 保持不变，更加强调防御塔血量重要性
         "money": 0.006,         # 保持不变，鼓励获取资源
         "exp": 0.006,           # 保持不变，鼓励获取经验
         "ep_rate": 0.75,        # 保持不变，鼓励技能释放
         "death": -1.0,          # 保持不变，避免死亡惩罚
-        "kill": 0.5,            # 改为正向奖励，鼓励击杀敌方
+        "kill": 1.0,            # 改为正向奖励，鼓励击杀敌方
         "last_hit": 0.5,        # 提高补刀奖励
         "forward": 0.01,        # 保持不变，鼓励更主动的进攻
     }
