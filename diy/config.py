@@ -31,15 +31,27 @@ class GameConfig:
     ]
     # Set the weight of each reward item and use it in reward_manager
     # 设置各个回报项的权重，在reward_manager中使用
+    # REWARD_WEIGHT_DICT = {
+    #     "hp_point": 2.0,
+    #     "tower_hp_point": 5.0,
+    #     "money": 0.006,
+    #     "exp": 0.006,
+    #     "ep_rate": 0.75,
+    #     "death": -1.0,
+    #     "kill": -0.6,
+    #     "last_hit": 0.5,
+    #     "forward": 0.01,
+    # }
+     # 后来改动的
     REWARD_WEIGHT_DICT = {
-        "hp_point": 2.0,
-        "tower_hp_point": 5.0,
-        "money": 0.006,
-        "exp": 0.006,
+        "hp_point": 3.0,
+        "tower_hp_point": 6.0,
+        "money": 0.03,
+        "exp": 0.03,
         "ep_rate": 0.75,
-        "death": -1.0,
-        "kill": -0.6,
-        "last_hit": 0.5,
+        "death": -0.6,
+        "kill": -0.2,
+        "last_hit": 2.0,
         "forward": 0.01,
     }
     # Time decay factor, used in reward_manager
@@ -76,8 +88,17 @@ class DimConfig:
 # 模型和算法使用的相关配置
 class Config:
     NETWORK_NAME = "network"
+    # Switch to control whether to use Transformer or LSTM
+    # 控制是否使用Transformer或LSTM的开关
+    USE_TRANSFORMER = True
     LSTM_TIME_STEPS = 16
     LSTM_UNIT_SIZE = 512
+    # Transformer configuration
+    # Transformer配置
+    TRANSFORMER_NUM_LAYERS = 2
+    TRANSFORMER_NUM_HEADS = 8
+    TRANSFORMER_DIM_FEEDFORWARD = 2048
+    TRANSFORMER_DROPOUT = 0.1
     DATA_SPLIT_SHAPE = [
         810,
         1,
@@ -164,4 +185,5 @@ class Config:
     # For instance, the dimension for ppo is 15584,
     # learner上reverb样本的输入维度, 注意不同的算法维度不一样, 比如示例代码中ppo的维度是15584
     # **注意**，此项必须正确配置，应该与definition.py中的NumpyData2SampleData函数数据对齐，否则可能报样本维度错误
-    SAMPLE_DIM = 15584
+    # SAMPLE_DIM =  15584
+    SAMPLE_DIM = 14562

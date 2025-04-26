@@ -18,12 +18,33 @@ from torch.nn import ModuleDict
 import torch.nn.functional as F
 
 import numpy as np
+import math
 from math import ceil, floor
 from collections import OrderedDict
 from typing import Dict, List, Tuple
 
 from diy.config import DimConfig
 from diy.config import Config
+
+
+# 位置编码类，用于Transformer
+# Positional Encoding class for Transformer
+class PositionalEncoding(nn.Module):
+    def __init__(self, d_model, dropout=0.1, max_len=5000):
+        super(PositionalEncoding, self).__init__()
+        self.dropout = nn.Dropout(p=dropout)
+
+        pe = torch.zeros(max_len, d_model)
+        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        pe = pe.unsqueeze(0)
+        self.register_buffer('pe', pe)
+        
+    def forward(self, x):
+        x = x + self.pe[:, :x.size(1), :]
+        return self.dropout(x)
 
 
 class Model(nn.Module):
@@ -174,6 +195,29 @@ class Model(nn.Module):
             batch_first=True,
             dropout=0,
             bidirectional=False,
+        )
+        
+        """public transformer"""
+        # 添加Transformer编码器模块
+        # Add Transformer encoder module
+        self.transformer_encoder_layer = nn.TransformerEncoderLayer(
+            d_model=self.lstm_unit_size,
+            nhead=Config.TRANSFORMER_NUM_HEADS,
+            dim_feedforward=Config.TRANSFORMER_DIM_FEEDFORWARD,
+            dropout=Config.TRANSFORMER_DROPOUT,
+            batch_first=True
+        )
+        self.transformer_encoder = nn.TransformerEncoder(
+            self.transformer_encoder_layer,
+            num_layers=Config.TRANSFORMER_NUM_LAYERS
+        )
+        
+        # 位置编码层
+        # Positional encoding layer
+        self.pos_encoder = PositionalEncoding(
+            d_model=self.lstm_unit_size,
+            dropout=Config.TRANSFORMER_DROPOUT,
+            max_len=self.lstm_time_steps
         )
 
         """output label"""
@@ -360,18 +404,41 @@ class Model(nn.Module):
 
         reshape_fc_public_result = fc_public_result.reshape(-1, self.lstm_time_steps, 512)
 
-        # public lstm: first hidden-state h0，second cell-state c0
-        # 公共LSTM：第一个隐藏状态 h0，第二个细胞状态 c0
-        lstm_initial_state_in = [
-            lstm_hidden_init.unsqueeze(0),
-            lstm_cell_init.unsqueeze(0),
-        ]
-        lstm_outputs, state = self.lstm(reshape_fc_public_result, lstm_initial_state_in)
+        # 根据配置选择使用LSTM或Transformer
+        # Choose LSTM or Transformer based on configuration
+        if Config.USE_TRANSFORMER:
+            # 使用Transformer编码器
+            # Use Transformer encoder
+            # 添加位置编码
+            # Add positional encoding
+            src = self.pos_encoder(reshape_fc_public_result)
+            # 通过Transformer编码器
+            # Pass through Transformer encoder
+            transformer_output = self.transformer_encoder(src)
+            
+            # 保持与LSTM输出格式一致
+            # Keep consistent with LSTM output format
+            lstm_outputs = torch.cat([transformer_output[:, idx, :] for idx in range(transformer_output.size(1))], dim=1)
+            
+            # 为了保持接口一致，我们仍然需要提供这些输出
+            # To maintain interface consistency, we still need to provide these outputs
+            self.lstm_cell_output = lstm_cell_init
+            self.lstm_hidden_output = lstm_hidden_init
+        else:
+            # 使用原始的LSTM
+            # Use original LSTM
+            # 公共LSTM：第一个隐藏状态 h0，第二个细胞状态 c0
+            # public LSTM: first hidden-state h0，second cell-state c0
+            lstm_initial_state_in = [
+                lstm_hidden_init.unsqueeze(0),
+                lstm_cell_init.unsqueeze(0),
+            ]
+            lstm_outputs, state = self.lstm(reshape_fc_public_result, lstm_initial_state_in)
 
-        lstm_outputs = torch.cat([lstm_outputs[:, idx, :] for idx in range(lstm_outputs.size(1))], dim=1)
+            lstm_outputs = torch.cat([lstm_outputs[:, idx, :] for idx in range(lstm_outputs.size(1))], dim=1)
 
-        self.lstm_cell_output = state[1]
-        self.lstm_hidden_output = state[0]
+            self.lstm_cell_output = state[1]
+            self.lstm_hidden_output = state[0]
 
         reshape_lstm_outputs_result = lstm_outputs.reshape(-1, self.lstm_unit_size)
 

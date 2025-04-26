@@ -86,8 +86,19 @@ class Agent(BaseAgent):
 
         feature, lstm_cell, lstm_hidden = torch_inputs
         feature_vec = feature.reshape(-1, self.seri_vec_split_shape[0][0])
-        lstm_hidden_state = lstm_hidden.reshape(-1, self.lstm_unit_size)
-        lstm_cell_state = lstm_cell.reshape(-1, self.lstm_unit_size)
+        
+        # 检查是否使用Transformer模式，如果是，则需要特殊处理LSTM状态
+        # Check if using Transformer mode, if so, special handling for LSTM states is needed
+        if Config.USE_TRANSFORMER and len(list_obs_data) == 1:
+            # 在Transformer模式下，如果只有一个观察数据，直接使用原始状态
+            # In Transformer mode, if there's only one observation data, use original states directly
+            lstm_hidden_state = lstm_hidden
+            lstm_cell_state = lstm_cell
+        else:
+            # 在LSTM模式或有多个观察数据时，正常reshape
+            # In LSTM mode or with multiple observation data, reshape normally
+            lstm_hidden_state = lstm_hidden.reshape(-1, self.lstm_unit_size)
+            lstm_cell_state = lstm_cell.reshape(-1, self.lstm_unit_size)
 
         format_inputs = [feature_vec, lstm_hidden_state, lstm_cell_state]
 
@@ -101,8 +112,14 @@ class Agent(BaseAgent):
 
         logits, value, _lstm_cell, _lstm_hidden = np_output[:4]
 
-        _lstm_cell = _lstm_cell.squeeze(axis=0)
-        _lstm_hidden = _lstm_hidden.squeeze(axis=0)
+        # Handle tensor dimensions based on model mode
+        if Config.USE_TRANSFORMER and len(list_obs_data) == 1:
+            # In Transformer mode with single observation, no need to squeeze
+            pass
+        else:
+            # In LSTM mode or multiple observations, squeeze the first dimension
+            _lstm_cell = _lstm_cell.squeeze(axis=0)
+            _lstm_hidden = _lstm_hidden.squeeze(axis=0)
 
         list_act_data = list()
         for i in range(len(legal_action)):
@@ -203,8 +220,19 @@ class Agent(BaseAgent):
         init_lstm_hidden = data_list[-1]
 
         feature_vec = feature.reshape(-1, self.seri_vec_split_shape[0][0])
-        lstm_hidden_state = init_lstm_hidden.reshape(-1, self.lstm_unit_size)
-        lstm_cell_state = init_lstm_cell.reshape(-1, self.lstm_unit_size)
+        
+        # 检查是否使用Transformer模式，如果是，则需要特殊处理LSTM状态
+        # Check if using Transformer mode, if so, special handling for LSTM states is needed
+        if Config.USE_TRANSFORMER and len(list_sample_data) == 1:
+            # 在Transformer模式下，如果只有一个样本数据，直接使用原始状态
+            # In Transformer mode, if there's only one sample data, use original states directly
+            lstm_hidden_state = init_lstm_hidden
+            lstm_cell_state = init_lstm_cell
+        else:
+            # 在LSTM模式或有多个样本数据时，正常reshape
+            # In LSTM mode or with multiple sample data, reshape normally
+            lstm_hidden_state = init_lstm_hidden.reshape(-1, self.lstm_unit_size)
+            lstm_cell_state = init_lstm_cell.reshape(-1, self.lstm_unit_size)
 
         format_inputs = [feature_vec, lstm_hidden_state, lstm_cell_state]
 
