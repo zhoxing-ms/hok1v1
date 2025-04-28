@@ -11,7 +11,7 @@ import os
 import time
 import random
 import numpy as np
-from ppo.feature.definition import (
+from diy.feature.definition import (
     sample_process,
     build_frame,
     lineup_iterator_roundrobin_camp_heroes,
@@ -19,7 +19,7 @@ from ppo.feature.definition import (
     NONE_ACTION,
 )
 from kaiwu_agent.utils.common_func import attached
-from ppo.config import GameConfig, Config
+from diy.config import GameConfig, Config
 from tools.model_pool_utils import get_valid_model_pool
 
 

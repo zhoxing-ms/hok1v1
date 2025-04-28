@@ -11,7 +11,7 @@ Author: Tencent AI Arena Authors
 from kaiwu_agent.utils.common_func import create_cls, Frame, attached
 import numpy as np
 import collections
-from ppo.config import Config
+from diy.config import Config
 import random
 import itertools
 import os

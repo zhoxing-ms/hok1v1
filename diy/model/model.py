@@ -22,8 +22,8 @@ from math import ceil, floor
 from collections import OrderedDict
 from typing import Dict, List, Tuple
 
-from ppo.config import DimConfig
-from ppo.config import Config
+from diy.config import DimConfig
+from diy.config import Config
 
 
 class Model(nn.Module):

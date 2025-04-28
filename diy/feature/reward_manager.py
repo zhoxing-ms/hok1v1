@@ -8,7 +8,7 @@ Author: Tencent AI Arena Authors
 """
 
 import math
-from ppo.config import GameConfig
+from diy.config import GameConfig
 
 # Used to record various reward information
 # 用于记录各个奖励信息

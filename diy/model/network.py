@@ -13,7 +13,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import math
 from typing import List, Dict, Tuple, Optional, Union
-from ppo.config import Config
+from diy.config import Config
 
 # 注意力机制模块，用于处理序列数据之间的依赖关系
 class MultiHeadAttention(nn.Module):

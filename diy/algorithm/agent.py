@@ -14,8 +14,8 @@ torch.set_num_threads(1)
 torch.set_num_interop_threads(1)
 
 import os
-from ppo.model.model import Model
-from ppo.feature.definition import *
+from diy.model.model import Model
+from diy.feature.definition import *
 import numpy as np
 from kaiwu_agent.agent.base_agent import (
     BaseAgent,
@@ -26,9 +26,9 @@ from kaiwu_agent.agent.base_agent import (
     load_model_wrapper,
 )
 
-from ppo.config import Config
+from diy.config import Config
 from kaiwu_agent.utils.common_func import attached
-from ppo.feature.reward_manager import GameRewardManager
+from diy.feature.reward_manager import GameRewardManager
 
 
 @attached
