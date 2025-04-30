@@ -281,10 +281,34 @@ class FrameCollector:
                     sample_lstm = rl_info.lstm_info
 
     def _clip_reward(self, reward, max=100, min=-100):
-        if reward > max:
-            reward = max
-        elif reward < min:
-            reward = min
+        """自适应奖励裁剪，根据历史奖励分布动态调整裁剪范围"""
+        # 使用历史奖励的均值和标准差
+        if not hasattr(self, 'reward_history'):
+            self.reward_history = []
+        
+        self.reward_history.append(reward)
+        # 保持历史记录在合理范围内
+        if len(self.reward_history) > 10000:
+            self.reward_history.pop(0)
+        
+        if len(self.reward_history) > 100:  # 有足够样本时才计算
+            mean = np.mean(self.reward_history)
+            std = np.std(self.reward_history)
+            # 裁剪到均值±3倍标准差范围内
+            max_reward = mean + 3 * std
+            min_reward = mean - 3 * std
+            
+            if reward > max_reward:
+                reward = max_reward
+            elif reward < min_reward:
+                reward = min_reward
+        else:
+            # 样本不足时使用固定裁剪
+            if reward > 100:
+                reward = 100
+            elif reward < -100:
+                reward = -100
+                
         return reward
 
     def __len__(self):

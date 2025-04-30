@@ -26,8 +26,8 @@ class GameConfig:
     """
     CAMP_HEROES = [
         [{"hero_id": 133}],
-        [{"hero_id": 199}],
-        [{"hero_id": 508}],
+        # [{"hero_id": 199}],
+        # [{"hero_id": 508}],
     ]
     # Set the weight of each reward item and use it in reward_manager
     # 设置各个回报项的权重，在reward_manager中使用
@@ -89,8 +89,7 @@ class DimConfig:
 class Config:
     NETWORK_NAME = "network"
     # Switch to control whether to use Transformer or LSTM
-    # 控制是否使用Transformer或LSTM的开关
-    USE_TRANSFORMER = True
+
     LSTM_TIME_STEPS = 16
     LSTM_UNIT_SIZE = 512
     # Transformer configuration
@@ -185,5 +184,9 @@ class Config:
     # For instance, the dimension for ppo is 15584,
     # learner上reverb样本的输入维度, 注意不同的算法维度不一样, 比如示例代码中ppo的维度是15584
     # **注意**，此项必须正确配置，应该与definition.py中的NumpyData2SampleData函数数据对齐，否则可能报样本维度错误
-    # SAMPLE_DIM =  15584
-    SAMPLE_DIM = 14562
+    SAMPLE_DIM =  15584
+    # SAMPLE_DIM = 14562
+
+    # 控制是否使用Transformer或LSTM的开关
+    USE_TRANSFORMER = False
+    USE_BIDIRECTIONAL_LSTM = False  # Set to True to enable bidirectional LSTM
